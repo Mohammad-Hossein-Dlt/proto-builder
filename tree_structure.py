@@ -7,6 +7,43 @@ SearchPosition = Literal["first", "last"]
 VariantMode = Literal["include-self", "exclude-self", "all"]
 
 @dataclass
+class PathTree:
+    
+    root: PathNode = field(default_factory="PathNode")
+    
+    def __init__(
+        self,
+        name: str,
+        tags: set[str] = set(),
+    ):
+        self.root = PathNode(name, tags=tags)
+    
+    def child(
+        self,
+        name: str,
+        tags: set[str] = set(),
+    ) -> PathNode:
+        return self.root.child(name, tags)
+    
+    def add(
+        self,
+        *parts: str,
+    ) -> PathNode:
+        if not parts:
+            raise ValueError("parts cannot be empty")
+        node = self.root
+        for part in parts:
+            node = node.child(part)
+        return node    
+
+    def iter_paths(
+        self,
+    ) -> Iterator[str]:
+        yield self.root.path
+        for root in self.root.children.values():
+            yield from root.iter_paths()
+
+@dataclass
 class PathNode:
     name: str
     parent: "PathNode | None" = None
@@ -387,43 +424,6 @@ class PathNode:
 
         return _walk(self)
         
-        
-@dataclass
-class PathTree:
-    
-    root: PathNode = field(default_factory=PathNode)
-    
-    def __init__(
-        self,
-        name: str,
-        tags: set[str] = set(),
-    ):
-        self.root = PathNode(name, tags=tags)
-    
-    def child(
-        self,
-        name: str,
-        tags: set[str] = set(),
-    ) -> PathNode:
-        return self.root.child(name, tags)
-    
-    def add(
-        self,
-        *parts: str,
-    ) -> PathNode:
-        if not parts:
-            raise ValueError("parts cannot be empty")
-        node = self.root
-        for part in parts:
-            node = node.child(part)
-        return node    
-
-    def iter_paths(
-        self,
-    ) -> Iterator[str]:
-        yield self.root.path
-        for root in self.root.children.values():
-            yield from root.iter_paths()
 
 if __name__ == "__main__":
     
@@ -450,38 +450,3 @@ if __name__ == "__main__":
     
     # child_I = child_C.child("d", tags={"tag-1"}).child("h").child("i")
     child_I = tree.root.find_node("i")
-
-    # node: PathNode = tree.root.find_node_by_contiguous_path("d", "i", position="last")
-    # nodes: list[PathNode] = tree.root.find_all_nodes_by_discontiguous_path("d", "i")
-    
-    # print(child_C.contains_subtree(child_C))
-    # print([n.name for n in child_I.path_by_criteria(tags={"tag-1"}, tag_mode="include")])
-    for i in child_I.path_variants_to_root():
-        print(".".join([n.name for n in i]))
-        
-'''
-a.c.d.h.i
-
-a.c.d.i
-a.c.i
-
-a.c.h.i
-a.h.i
-
-a.d.h.i
-a.d.i
-
-c.d.h.i
-
-c.d.i
-d.i
-
-c.h.i
-c.i
-
-d.h.i
-h.i
-
-a.i
-
-'''
