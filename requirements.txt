@@ -1,0 +1,5 @@
+grpcio>=1.80.0
+grpcio-tools>=1.80.0
+mypy-protobuf>=5.1.0
+pipdeptree>=2.35.3
+pydantic>=2.13.4
