@@ -264,7 +264,17 @@ class BaseBuilder:
         if any(arg in optional_exact_include_self or arg in optional_scope_include_self for arg in arg_names):
             return True
         
-        # Exact & Scope
+        # Scope
+        for variant in node.path_variants_to_root(mode="all"):
+            
+            # For relative path like Class1.Classs2, contains self
+            if self.create_path_str(*variant) in optional_scope_include_self:
+                return True
+            
+            # For relative path like Class1.var, contains self
+            if any(self.create_path_str(*variant, arg) in optional_scope_include_self or arg in optional_scope_include_self for arg in arg_names):
+                return True            
+        
         for variant in node.path_variants_to_root(mode="exclude-self"):
             
             # Exact
@@ -283,21 +293,6 @@ class BaseBuilder:
             # For relative path like Class1.Classs2, contains self
             if self.create_path_str(*variant) in optional_exact_include_self:
                 return True
-            
-            # For relative path like Class1.var, contains self
-            if any(self.create_path_str(*variant, arg) in optional_exact_include_self for arg in arg_names):
-                return True
-        
-        # Scope
-        for variant in node.path_variants_to_root(mode="all"):
-            
-            # For relative path like Class1.Classs2, contains self
-            if self.create_path_str(*variant) in optional_scope_include_self:
-                return True
-            
-            # For relative path like Class1.var, contains self
-            if any(self.create_path_str(*variant, arg) in optional_scope_include_self or arg in optional_scope_include_self for arg in arg_names):
-                return True            
                     
         return False
 
@@ -306,21 +301,7 @@ class BaseBuilder:
         node: PathNode,
         f_type: type,
     ) -> type:
-        
-        # exact_overrides = self.config.override_exact
-        # if exact_overrides:
-        #     variant_paths = self._variant_paths(node, exact=True)
-        #     for path, override_type in exact_overrides.items():
-        #         if path in variant_paths:
-        #             return override_type
 
-        # scoped_overrides = self.config.override_scope
-        # if scoped_overrides:
-        #     scoped_variant_paths = self._variant_paths(node, exact=False, contains_self=False)
-        #     for path, override_type in scoped_overrides.items():
-        #         if path in scoped_variant_paths:
-        #             return override_type
-        
         arg_names = self._arg_names(node)
         
         # Exact
@@ -330,30 +311,42 @@ class BaseBuilder:
         override_scope_include_self = self.config.get_override("scope", "include")
         override_scope_exclude_self = self.config.get_override("scope", "exclude")
         
-        ov = None
-        
-        # For absolute path like `Class1` | contains self
+        # For absolute path like `Class1`, contains self
         for arg in arg_names:
-            if arg in override_exact_include_self:
-                ov = override_exact_include_self.get(arg)
-            if arg in override_scope_include_self:
-                ov = override_scope_include_self.get(arg)
-        
-        # Exact & Scope
-        for variant in node.path_variants_to_root(mode="exclude-self"):
             
+            if arg in override_exact_include_self:
+                return override_exact_include_self.get(arg).type
+                
+            if arg in override_scope_include_self:
+                return override_scope_include_self.get(arg).type
+        
+        # Scope
+        for variant in node.path_variants_to_root(mode="all"):
+            
+            # For relative path like Class1.Classs2, contains self
+            path = self.create_path_str(*variant)
+            if path in override_scope_include_self:
+                return override_scope_include_self.get(path).type
+
+            for arg in arg_names:
+                path = self.create_path_str(*variant, arg)
+                if path in override_scope_include_self:
+                    return override_scope_include_self.get(path).type          
+
+        for variant in node.path_variants_to_root(mode="exclude-self"):
+
             # Exact
             # For relative path like Class1.var, contains self
             for arg in arg_names:
                 path = self.create_path_str(*variant, arg)
                 if path in override_exact_include_self:
-                    ov = override_exact_include_self.get(path, f_type)
+                    return override_exact_include_self.get(path).type
             
             # Scope
             # For relative path like Class1.Classs2, exclude self
             path = self.create_path_str(*variant)
             if path in override_scope_exclude_self:
-                ov = override_scope_exclude_self.get(path, f_type)
+                return override_scope_exclude_self.get(path).type
             
         # Exact
         for variant in node.path_variants_to_root(tags={"class"}, tag_mode="include", mode="include-self"):
@@ -361,29 +354,6 @@ class BaseBuilder:
             # For relative path like Class1.Classs2, contains self
             path = self.create_path_str(*variant)
             if path in override_exact_include_self:
-                ov = override_exact_include_self.get(path, f_type)
-            
-            # For relative path like Class1.var, contains self
-            for arg in arg_names:
-                path = self.create_path_str(*variant, arg)
-                if path in override_exact_include_self:
-                    ov = override_exact_include_self.get(path, f_type)
-            
-        # Scope
-        for variant in node.path_variants_to_root(mode="all"):
-            
-            # For relative path like Class1.Classs2, contains self
-            path = self.create_path_str(*variant)
-            if path in override_scope_include_self:
-                ov = override_scope_include_self.get(path, f_type)
-            
-            # For relative path like Class1.var, contains self
-            for arg in arg_names:
-                path = self.create_path_str(*variant, arg)
-                if path in override_scope_include_self:
-                    ov = override_scope_include_self.get(path, f_type)
-        
-        if ov:
-            return ov.type            
+                return override_exact_include_self.get(path).type        
         
         return f_type
