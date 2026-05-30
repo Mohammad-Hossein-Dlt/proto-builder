@@ -1,6 +1,7 @@
 from tree_structure import PathTree
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
+from datetime import datetime
 
 PROTO = {
     int: "int32",
@@ -8,6 +9,7 @@ PROTO = {
     bool: "bool",
     str: "string",
     bytes: "bytes",
+    datetime: "google.protobuf.Timestamp",
 }
 
 OTHER = {
@@ -59,24 +61,6 @@ class ProtoConfig:
         self.remove = remove
         self.optional = optional
         self.optional_all = optional_all
-        
-        # self.remove_exact = set()
-        # self.remove_scope = set()
-        
-        # self.optional_exact = set()
-        # self.optional_scope = set()
-        
-        # for i in self.remove:
-        #     if i.condition == "exact":
-        #         self.remove_exact.add(i.name)
-        #     elif i.condition == "scope":
-        #         self.remove_scope.add(i.name)
-                
-        # for i in self.optional:
-        #     if i.condition == "exact":
-        #         self.optional_exact.add(i.name)
-        #     elif i.condition == "scope":
-        #         self.optional_scope.add(i.name)
         
     def get_override(
         self,
