@@ -1,6 +1,6 @@
 from .utils import PROTO, OTHER, NONE_TYPE, ProtoConfig, ProtoType, NodeData, Message
 from .base_builder import BaseBuilder
-from tree_structure import PathNode, PathTree
+from tree_structure import Node
 from dataclasses import asdict
 from typing import (
     get_origin,
@@ -16,7 +16,7 @@ class SessionBuilder(BaseBuilder):
         super().__init__(config)
 
     @staticmethod
-    def _is_union(
+    def _is_value(
         args: tuple,
     ) -> bool:
         return all(a in [int, float, str, bool, list, tuple, set, dict] for a in args) and len(args) == 2
@@ -43,7 +43,7 @@ class SessionBuilder(BaseBuilder):
 
         if self.is_union(origin) and self._is_optional_union_many(args):
 
-            non_none_args = tuple(arg for arg in args if arg is not NONE_TYPE)
+            non_none_args = [arg for arg in args if arg is not NONE_TYPE]
 
             if any(self.is_custom(arg) or self.is_enum(arg) for arg in non_none_args):
                 return ProtoType(optional=True, repeated=False, p_type=OTHER["any"])
@@ -75,7 +75,7 @@ class SessionBuilder(BaseBuilder):
             
             return ProtoType(optional=True, repeated=False, p_type=PROTO.get(inner, OTHER["any"]))
         
-        if self.is_union(origin) and self._is_union(args):
+        if self.is_union(origin) and self._is_value(args):
             return ProtoType(optional=False, repeated=False, p_type=OTHER["value"])
         
         if origin in (list, tuple, set):
@@ -113,7 +113,7 @@ class SessionBuilder(BaseBuilder):
 
     def proto_type(
         self,
-        node: PathNode,
+        node: Node,
     ) -> ProtoType:
     
         resolved_type = self.resolve_type(node, node.data.get("field_type"))
@@ -123,9 +123,9 @@ class SessionBuilder(BaseBuilder):
 
     def _node_by_path(
         self,
-        tree: PathTree,
+        tree: Node,
         path: str,
-    ) -> PathNode:
+    ) -> Node:
     
         if not path:
             return tree.root
@@ -135,7 +135,7 @@ class SessionBuilder(BaseBuilder):
 
     def create_node(
         self,
-        tree: PathTree,
+        tree: Node,
         annotation: type,
         path: str = "",
     ):
@@ -173,7 +173,7 @@ class SessionBuilder(BaseBuilder):
             
     def collect_nested_defs(
         self,
-        tree:PathTree,
+        tree: Node,
         annotation: type,
         path: str = "",
     ):
@@ -227,12 +227,12 @@ class SessionBuilder(BaseBuilder):
     def model_to_proto(
         self,
         model: type,
-        tree: PathTree | None = None,
+        tree: Node | None = None,
         prefix: str | None = None,
-    ) -> PathTree:
+    ) -> Node:
         
         if tree is None:
-            tree = PathTree(model.__name__)
+            tree = Node(model.__name__)
             self.create_node(tree, model)
 
         if self.is_custom(model):
@@ -248,25 +248,25 @@ class SessionBuilder(BaseBuilder):
         elif self.is_enum(model):
             self.create_node(tree, model, prefix or "")
 
-        return tree
+        return tree.root
 
     def build_tree(
         self,
         _type: type,
+        node: Node | None = None,
         name: str | None = None,
-    ) -> PathTree:
+    ) -> Node:
     
         if self.is_union(type(_type)) or self.is_union(_type):
-            tree = PathTree(name or "type")
-            self.collect_nested_defs(tree, _type, name or "type")
-            return tree
+            tree = Node(name or _type.__name__) if not node else node
+            self.collect_nested_defs(tree, _type, name or _type.__name__)
+            return tree.root
         
-        return self.model_to_proto(_type)
+        return self.model_to_proto(_type, node)
 
     def node_to_message(
         self,
-        tree: PathTree,
-        node: PathNode,
+        node: Node,
         visited: set[str] | None = None,
     ) -> list[Message]:
         
@@ -295,10 +295,10 @@ class SessionBuilder(BaseBuilder):
 
             if proto.contains_custom and not child.data.get("message_name") and child.children:
                 for grandchild in child.children.values():
-                    messages_list.extend(self.node_to_message(tree, grandchild, visited))
+                    messages_list.extend(self.node_to_message(grandchild, visited))
 
             if child.children:
-                messages_list.extend(self.node_to_message(tree, child, visited))
+                messages_list.extend(self.node_to_message(child, visited))
 
             lines.append(self.format_proto_field(proto, idx))
             message.modules.append(proto.p_type)

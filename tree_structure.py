@@ -7,28 +7,28 @@ SearchPosition = Literal["first", "last"]
 VariantMode = Literal["include-self", "exclude-self", "all"]
 
 @dataclass
-class PathTree:
+class Tree:
     
-    root: PathNode = field(default_factory="PathNode")
+    root: Node = field(default_factory="Node")
     
     def __init__(
         self,
         name: str,
         tags: set[str] = set(),
     ):
-        self.root = PathNode(name, tags=tags)
+        self.root = Node(name, tags=tags)
     
     def child(
         self,
         name: str,
         tags: set[str] = set(),
-    ) -> PathNode:
+    ) -> Node:
         return self.root.child(name, tags)
     
     def add(
         self,
         *parts: str,
-    ) -> PathNode:
+    ) -> Node:
         if not parts:
             raise ValueError("parts cannot be empty")
         node = self.root
@@ -44,11 +44,11 @@ class PathTree:
             yield from root.iter_paths()
 
 @dataclass
-class PathNode:
+class Node:
     name: str
-    parent: "PathNode | None" = None
+    parent: "Node | None" = None
     data: dict = field(default_factory=dict)
-    children: dict[str, "PathNode"] = field(default_factory=dict)
+    children: dict[str, "Node"] = field(default_factory=dict)
     tags: set[str] = field(default_factory=set)
 
     @property
@@ -58,7 +58,7 @@ class PathNode:
         return self.name
 
     @property
-    def root(self) -> "PathNode":
+    def root(self) -> "Node":
         if self.parent is None:
             return self
         return self.parent.root
@@ -66,7 +66,7 @@ class PathNode:
     def _iter_children(
         self,
         position: SearchPosition = "first",
-    ) -> Iterator[PathNode]:
+    ) -> Iterator[Node]:
     
         if position == "first":
             return iter(self.children.values())
@@ -77,20 +77,21 @@ class PathNode:
         self,
         name: str,
         tags: set[str] = set(),
-    ) -> "PathNode":
+    ) -> "Node":
         
         key = name.lower()
         if key not in self.children:
-            self.children[key] = PathNode(name=name, parent=self, tags=tags)
+            self.children[key] = Node(name=name, parent=self, tags=tags)
         return self.children[key]
     
     def node(
         self,
-        _node: "PathNode",
-    ) -> "PathNode":
+        _node: "Node",
+    ) -> "Node":
         
         key = _node.name.lower()
         if key not in self.children:
+            _node.parent = self
             self.children[key] = _node
         return self.children[key]
     
@@ -98,13 +99,13 @@ class PathNode:
         self,
         name: str,
         *parts: str,
-    ) -> "PathNode":
+    ) -> "Node":
         
-        root = PathNode(name=name, parent=self)
+        root = Node(name=name, parent=self)
         node = root        
         for i in parts:
             key = i.lower()
-            node.children[key] = PathNode(name=i, parent=node)
+            node.children[key] = Node(name=i, parent=node)
             node = node.children[key]
         self.children[name] = root
         
@@ -112,7 +113,7 @@ class PathNode:
         self,
         *parts: str,
         tags: set[str] = set(),
-    ) -> "PathNode":
+    ) -> "Node":
         
         for i in parts:
             self.child(i, tags=tags)
@@ -130,7 +131,7 @@ class PathNode:
         self,
         tags: set[str] = set(),
         tag_mode: TagMode = "all",
-    ) -> list["PathNode"]:
+    ) -> list["Node"]:
         
         path = self.path_to_root()
         
@@ -148,7 +149,7 @@ class PathNode:
     def find_nodes_by_tags( #
         self,
         tags: set[str],
-    ) -> list["PathNode"]:
+    ) -> list["Node"]:
         
         result = []
         if tags.issubset(self.tags):
@@ -163,7 +164,7 @@ class PathNode:
         self,
         name: str,
         position: SearchPosition = "first",
-    ) -> "PathNode | None":
+    ) -> "Node | None":
         
         if self.name == name:
             return self
@@ -178,7 +179,7 @@ class PathNode:
     def find_all_nodes( #
         self,
         name: str,
-    ) -> list["PathNode"]:
+    ) -> list["Node"]:
     
         result = []
 
@@ -194,12 +195,12 @@ class PathNode:
         self,
         *parts: str,
         position: SearchPosition = "first",
-    ) -> "PathNode | None":
+    ) -> "Node | None":
         
         if not parts:
             return self
 
-        def search_from(node: "PathNode", index: int) -> "PathNode | None":
+        def search_from(node: "Node", index: int) -> "Node | None":
             if index == len(parts):
                 return node
 
@@ -230,12 +231,12 @@ class PathNode:
         self,
         *parts: str,
         position: SearchPosition = "first",
-    ) -> "PathNode | None":
+    ) -> "Node | None":
         
         if not parts:
             return self
         
-        def search_from(node: "PathNode", index: int) -> "PathNode | None":
+        def search_from(node: "Node", index: int) -> "Node | None":
             
             if index == len(parts):
                 return node
@@ -272,15 +273,15 @@ class PathNode:
     def find_all_nodes_by_contiguous_path( #
         self,
         *parts: str,
-    ) -> list["PathNode"]:
+    ) -> list["Node"]:
     
         if not parts:
             return [self]
 
         target = parts[0]
-        results: list[PathNode] = []
+        results: list[Node] = []
 
-        def _walk(node: "PathNode", remaining: tuple[str, ...]) -> None:
+        def _walk(node: "Node", remaining: tuple[str, ...]) -> None:
             if not remaining:
                 results.append(node)
                 return
@@ -308,7 +309,7 @@ class PathNode:
     
         result = []
         
-        def _walk(node: "PathNode", idx: int = 0) -> None:
+        def _walk(node: "Node", idx: int = 0) -> None:
             if idx == len(parts):
                 result.append(node)
                 return
@@ -326,7 +327,7 @@ class PathNode:
     
     def leaves( #
         self,
-    ) -> list["PathNode"]:
+    ) -> list["Node"]:
         
         result = []
     
@@ -341,7 +342,7 @@ class PathNode:
     def path_to_root(
         self,
         name: str | None = None,
-    ) -> list["PathNode"]:
+    ) -> list["Node"]:
         
         if self.parent is None or self.name == name:
             return [self]
@@ -352,9 +353,9 @@ class PathNode:
         tags: set[str] = set(),
         tag_mode: Literal["include", "exclude"] = "include",
         mode: VariantMode = "include-self", 
-    ) -> Iterator[list["PathNode"]]:
+    ) -> Iterator[list["Node"]]:
         
-        def is_match(node: "PathNode") -> bool:
+        def is_match(node: "Node") -> bool:
             
             if not tags:
                 return True
@@ -391,14 +392,14 @@ class PathNode:
                 
     def last_node(
         self,
-    ) -> "PathNode":
+    ) -> "Node":
         
         node = self
         while node.children:
             node = list(node.children.values())[-1]
         return node
     
-    def same_as(self, other: "PathNode") -> bool:
+    def same_as(self, other: "Node") -> bool:
         if self.name != other.name:
             return False
 
@@ -414,9 +415,9 @@ class PathNode:
 
         return True
 
-    def contains_subtree(self, other: "PathNode") -> bool:
+    def contains_subtree(self, other: "Node") -> bool:
 
-        def _walk(node: "PathNode") -> bool:
+        def _walk(node: "Node") -> bool:
             if node.same_as(other):
                 return True
 
@@ -427,7 +428,7 @@ class PathNode:
 
 if __name__ == "__main__":
     
-    tree = PathTree("a")
+    tree = Tree("a")
     
     child_B = tree.root.child("b")
     

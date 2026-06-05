@@ -1,5 +1,5 @@
 from .utils import BUILTIN_MODULES, COLLECTIONS, NONE_TYPE, PROTO, ProtoConfig, ProtoType
-from tree_structure import PathNode, VariantMode
+from tree_structure import Node, VariantMode
 from enum import Enum
 import inspect
 import types
@@ -8,7 +8,6 @@ from typing import (
     get_origin,
     get_type_hints,
     Union,
-    Iterator,
 )
 
 
@@ -52,7 +51,7 @@ class BaseBuilder:
         f_type: type,
     ) -> bool:
     
-        return f_type in (Union, types.UnionType)
+        return f_type in (types.UnionType, Union)
 
     def is_custom(
         self,
@@ -167,18 +166,18 @@ class BaseBuilder:
 
     def create_path_str(
         self,
-        *args: PathNode | str,
+        *args: Node | str,
     ) -> str:
         
         return ".".join(
-            n.name if isinstance(n, PathNode) else n
+            n.name if isinstance(n, Node) else n
             for n in args
-            if isinstance(n, (PathNode, str))
+            if isinstance(n, (Node, str))
         )
 
     def _variant_paths(
         self,
-        node: PathNode,
+        node: Node,
         *,
         exact: bool,
         mode: VariantMode = "include-self",
@@ -191,7 +190,7 @@ class BaseBuilder:
 
     def _arg_names(
         self,
-        node: PathNode,
+        node: Node,
     ) -> tuple[str]:
     
         custom_args = self.collect_custom_types(node.data.get("field_type"))
@@ -199,7 +198,7 @@ class BaseBuilder:
 
     def is_removed(
         self,
-        node: PathNode,
+        node: Node,
     ) -> bool:
         
         arg_names = self._arg_names(node)
@@ -245,7 +244,7 @@ class BaseBuilder:
 
     def is_optional(
         self,
-        node: PathNode,
+        node: Node,
     ) -> bool:
         
         if self.config.optional_all:
@@ -298,7 +297,7 @@ class BaseBuilder:
 
     def resolve_type(
         self,
-        node: PathNode,
+        node: Node,
         f_type: type,
     ) -> type:
 

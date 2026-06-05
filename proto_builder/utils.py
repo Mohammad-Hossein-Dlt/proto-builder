@@ -1,4 +1,4 @@
-from tree_structure import PathTree
+from tree_structure import Node
 from dataclasses import dataclass, field
 from typing import Literal
 from datetime import datetime
@@ -131,8 +131,8 @@ class Session:
     fn_name: str = ""
     request_name: str = ""
     response_name: str = ""
-    input_params: dict[str, PathTree] = field(default_factory=dict)
-    output_params: dict[str, PathTree] = field(default_factory=dict)
+    input_params: dict[str, Node] = field(default_factory=dict)
+    output_params: dict[str, Node] = field(default_factory=dict)
 
 @dataclass(slots=True)
 class NodeData:
