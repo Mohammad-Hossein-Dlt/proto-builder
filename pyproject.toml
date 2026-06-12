@@ -1,14 +1,8 @@
 [project]
-name = "proto"
+name = "proto-builder"
 version = "0.1.0"
-requires-python = ">=3.14"
-dependencies = [
-    "grpcio>=1.81.0",
-    "grpcio-tools>=1.81.0",
-    "mypy-protobuf>=5.1.0",
-    "pipdeptree>=3.1.0",
-    "pydantic>=2.13.4",
-]
+dependencies = []
 
-[[tool.uv.index]]
-url = "https://repo.hmirror.ir/python/simple"
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
