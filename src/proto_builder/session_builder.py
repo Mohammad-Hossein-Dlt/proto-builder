@@ -1,6 +1,6 @@
 from .utils import PROTO, OTHER, NONE_TYPE, ProtoConfig, ProtoType, NodeData, Message
 from .base_builder import BaseBuilder
-from tree_structure import Node
+from .tree_structure import Node
 from dataclasses import asdict
 from typing import (
     get_origin,

@@ -1,4 +1,4 @@
-from tree_structure import Node
+from .tree_structure import Node
 from dataclasses import dataclass, field
 from typing import Literal
 from datetime import datetime

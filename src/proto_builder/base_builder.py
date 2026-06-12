@@ -1,5 +1,5 @@
 from .utils import BUILTIN_MODULES, COLLECTIONS, NONE_TYPE, PROTO, ProtoConfig, ProtoType
-from tree_structure import Node, VariantMode
+from .tree_structure import Node, VariantMode
 from enum import Enum
 import inspect
 import types

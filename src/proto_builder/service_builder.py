@@ -1,7 +1,7 @@
 from .utils import OTHER, MODULES, NONE_TYPE, ProtoConfig, Session, NodeData, Message
 from .base_builder import BaseBuilder
 from .session_builder import SessionBuilder
-from tree_structure import Node
+from .tree_structure import Node
 import inspect
 from dataclasses import asdict
 from typing import (
