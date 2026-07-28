@@ -1,10 +1,11 @@
-from .utils import PROTO, OTHER, NONE_TYPE, ProtoConfig, ProtoType, NodeData, Message
+from .utils import PROTO, OTHER, NONE_TYPE, ProtoConfig, ProtoType, NodeData, Message, MessageField, OneOf
 from .base_builder import BaseBuilder
 from .tree_structure import Node
 from dataclasses import asdict
 from typing import (
     get_origin,
     get_args,
+    Literal,
 )
 
 class SessionBuilder(BaseBuilder):
@@ -14,301 +15,243 @@ class SessionBuilder(BaseBuilder):
         config: ProtoConfig | None = None,
     ):
         super().__init__(config)
-
-    @staticmethod
-    def _is_value(
-        args: tuple,
-    ) -> bool:
-        return all(a in [int, float, str, bool, list, tuple, set, dict] for a in args) and len(args) == 2
-
-    @staticmethod
-    def _is_optional_union(
-        args: tuple,
-    ) -> bool:
-        return NONE_TYPE in args and len(args) == 2
-
-    @staticmethod
-    def _is_optional_union_many(
-        args: tuple,
-    ) -> bool:
-        return NONE_TYPE in args and len(args) > 2
-
+        
     def type_detector(
         self,
-        f_type: type,
-    ) -> ProtoType:
+        annotation: type,
+    ) -> ProtoType | None:
     
-        origin = get_origin(f_type)
-        args = get_args(f_type)
-
-        if self.is_union(origin) and self._is_optional_union_many(args):
-
-            non_none_args = [arg for arg in args if arg is not NONE_TYPE]
-
-            if any(self.is_custom(arg) or self.is_enum(arg) for arg in non_none_args):
-                return ProtoType(optional=True, repeated=False, p_type=OTHER["any"])
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+        
+        if self.is_optional(annotation):
             
-            # if dict in non_none_args:
-            #     return ProtoType(optional=True, repeated=False, p_type=OTHER["value"])
-            
-            if all(
-                arg in (list, tuple, set) or get_origin(arg) in (list, tuple, set)
-                for arg in non_none_args
-            ):
-                return ProtoType(optional=True, repeated=False, p_type=OTHER["listvalue"])
-            
-            return ProtoType(optional=True, repeated=False, p_type=OTHER["value"])
-
-        if self.is_union(origin) and self._is_optional_union(args):
-
             inner = next(arg for arg in args if arg is not NONE_TYPE)
-
-            if self.is_custom(inner) or self.is_enum(inner):
-                return ProtoType(optional=True, repeated=False, p_type=inner.__name__, contains_custom=True)
+            inner_proto = self.type_detector(inner)
             
-            if inner is dict or get_origin(inner) is dict:
-                inner_proto = self.type_detector(inner)
-                return ProtoType(optional=True, repeated=False, p_type=inner_proto.p_type, contains_custom=inner_proto.contains_custom)
+            if inner_proto.label == "repeated":
+                return ProtoType(label="optional", type=OTHER["listvalue"], process_type=False)
             
-            if inner in (list, tuple, set) or get_origin(inner) in (list, tuple, set):
-                return ProtoType(optional=True, repeated=False, p_type=OTHER["listvalue"])
-            
-            return ProtoType(optional=True, repeated=False, p_type=PROTO.get(inner, OTHER["any"]))
+            return ProtoType(label="optional", type=inner_proto.type, process_type=inner_proto.process_type)
         
-        if self.is_union(origin) and self._is_value(args):
-            return ProtoType(optional=False, repeated=False, p_type=OTHER["value"])
+        elif self.is_union(annotation):
+            return None            
         
-        if origin in (list, tuple, set):
+        elif origin in (list, tuple, set):
             
-            if not args or self.is_nested_collection(f_type):
-                return ProtoType(optional=False, repeated=False, p_type=OTHER["listvalue"])
-
-            inner_proto = self.type_detector(args[0])
-            return ProtoType(optional=False, repeated=True, p_type=inner_proto.p_type, contains_custom=inner_proto.contains_custom)
-
-        if origin is dict:
+            if not args or self.is_nested_collection(annotation):
+                return ProtoType(label="repeated", type=OTHER["listvalue"], process_type=False)
             
-            if len(args) != 2 or self.is_nested_collection(f_type):
-                return ProtoType(optional=False, repeated=False, p_type=f"{OTHER['struct']}")
+            inner = next(arg for arg in args if arg is not NONE_TYPE)
+            inner_proto = self.type_detector(inner)
+            
+            if inner_proto:
+                return ProtoType(label="repeated", type=inner_proto.type, process_type=inner_proto.process_type)
+            
+            return ProtoType(label="repeated", type=OTHER["listvalue"], process_type=False)
 
-            key_proto = self.type_detector(args[0])
-            value_proto = self.type_detector(args[1])
-            return ProtoType(
-                optional=False,
-                repeated=False,
-                p_type=f"map<{key_proto.p_type}, {value_proto.p_type}>",
-                contains_custom=key_proto.contains_custom or value_proto.contains_custom,
-            )
+        elif origin is dict:
+            
+            if len(args) != 2 or self.is_nested_collection(annotation):
+                return ProtoType(type=OTHER['struct'], process_type=False)
+            
+            inner = iter(args)
+            key_proto = self.type_detector(next(inner))
+            value_proto = self.type_detector(next(inner))
+            
+            if key_proto and value_proto:
+                return ProtoType(
+                    type=f"map<{key_proto.type}, {value_proto.type}>",
+                    process_type=key_proto.process_type or value_proto.process_type,
+                )
 
-        if f_type in (list, tuple, set):
-            return ProtoType(optional=False, repeated=False, p_type=f"{OTHER['listvalue']}")
+            return ProtoType(type=OTHER["struct"], process_type=False)
 
-        if f_type is dict:
-            return ProtoType(optional=False, repeated=False, p_type=f"{OTHER['struct']}")
+        elif annotation in (list, tuple, set):
+            return ProtoType(type=OTHER['listvalue'])
 
-        if self.is_enum(f_type) or self.is_custom(f_type):
-            return ProtoType(optional=False, repeated=False, p_type=f_type.__name__, contains_custom=True)
+        elif annotation is dict:
+            return ProtoType(type=OTHER['struct'])
+
+        elif self.is_enum(annotation) or self.is_custom(annotation):
+            return ProtoType(type=self.get_type_name(annotation))
         
-        return ProtoType(optional=False, repeated=False, p_type=PROTO.get(f_type, OTHER["any"]))
+        return ProtoType(type=PROTO.get(annotation, OTHER["any"]))
 
     def proto_type(
         self,
         node: Node,
-    ) -> ProtoType:
-    
-        resolved_type = self.resolve_type(node, node.data.get("field_type"))
+    ) -> ProtoType | None:
+        
+        data_type = node.data.get("type")
+        
+        resolved_type = self.resolve_type(node, data_type)
+        
+        if resolved_type != data_type:
+            path = node.path.split(".")
+            node.children.clear()
+            node = self.build_tree(resolved_type, node).find_node_by_contiguous_path(*path)
+
+        if self.resolve_is_removed(node):
+            return None
+        
+        optional = self.resolve_is_optional(node)
+        
         proto = self.type_detector(resolved_type)
-        proto.optional = proto.optional or (self.is_optional(node) and not proto.repeated)
+        
+        if optional and proto.label != "repeated":
+            proto.label = "optional"
+            
         return proto
-
-    def _node_by_path(
-        self,
-        tree: Node,
-        path: str,
-    ) -> Node:
     
-        if not path:
-            return tree.root
-        node = tree.root.find_node_by_contiguous_path(*path.split("."))
-        
-        return node or tree.root
-
-    def create_node(
+    def create_data(
         self,
-        tree: Node,
         annotation: type,
-        path: str = "",
+        node: Node,
+        mode: Literal["union", "enum", "custom", "primitive"] = "primitive",
     ):
-    
-        parent = self._node_by_path(tree, path)
-        child = parent if not path else parent.child(annotation.__name__, tags={"class"})
-
-        if self.is_enum(annotation):
-            child.data.update(
+        
+        name = self.get_type_name(annotation)
+        
+        if mode == "union":
+            node.data.update(
                 asdict(
                     NodeData(
-                        message_type="enum",
-                        message_name=annotation.__name__,
-                        field_type=annotation,
-                        is_custom=True,
-                    )
-                )
+                        label="oneof", name=name, type=annotation,
+                    ),
+                ),
             )
-            child.bulk(*self.enum_params(annotation))
             
-        elif self.is_custom(annotation):
-            child.data.update(
+        elif mode == "enum":
+            node.data.update(
                 asdict(
-                    NodeData(
-                        message_type="message",
-                        message_name=annotation.__name__,
-                        field_type=annotation,
-                        is_custom=True,
-                    )
+                    NodeData(label="enum", name=name, type=annotation)
                 )
             )
-            self.model_to_proto(annotation, tree, f"{path}.{annotation.__name__}" if path else annotation.__name__)
-        else:
-            child.data.update(asdict(NodeData(field_type=annotation)))
+            node.bulk(*self.get_enum_params(annotation))
             
-    def collect_nested_defs(
-        self,
-        tree: Node,
-        annotation: type,
-        path: str = "",
-    ):
-    
-        origin = get_origin(annotation)
-        args = get_args(annotation)
-        node = self._node_by_path(tree, path)
-
-        if self.is_union(origin) or self.is_collection(origin):
-            
-            node.data.update(asdict(NodeData(field_type=annotation)))
-
-            if self._is_optional_union(args):
-                inner = next(arg for arg in args if arg is not NONE_TYPE)
-                if inner is dict or get_origin(inner) is dict:
-                    inner_args = get_args(inner)
-                    for arg in inner_args:
-                        if self.is_custom(arg) or self.is_enum(arg):
-                            self.create_node(tree, arg, path)
-                else:
-                    if self.is_custom(inner) or self.is_enum(inner):
-                        self.create_node(tree, inner, path)
-                            
-            elif self.is_collection(origin):
-                for arg in args:
-                    if self.is_custom(arg) or self.is_enum(arg):
-                        self.create_node(tree, arg, path)
-
-            # for arg in args:
-                
-            #     if arg is NONE_TYPE:
-            #         continue
-
-            #     arg_origin = get_origin(arg)
-            #     if self.is_union(arg_origin) or self.is_collection(arg_origin):
-            #         self.collect_nested_defs(tree, arg, path)
-            #     else:
-            #         self.create_node(tree, arg, path)
-                    
-        elif self.is_enum(annotation):
-            node.data.update(asdict(NodeData(field_type=annotation)))
-            self.create_node(tree, annotation, path)
-
-        elif self.is_custom(annotation):
-            node.data.update(asdict(NodeData(field_type=annotation)))
-            self.create_node(tree, annotation, path)
+        elif mode == "custom":
+            node.data.update(
+                asdict(
+                    NodeData(label="message", name=name, type=annotation)
+                )
+            )
         
-        else:
-            node.data.update(asdict(NodeData(message_type="message", field_type=annotation)))
-
-    def model_to_proto(
-        self,
-        model: type,
-        tree: Node | None = None,
-        prefix: str | None = None,
-    ) -> Node:
-        
-        if tree is None:
-            tree = Node(model.__name__)
-            self.create_node(tree, model)
-
-        if self.is_custom(model):
-            
-            fields = self.get_class_fields(model)
-            prefix_parts = prefix.split(".") if prefix else []
-            prefix_parent = tree.root.find_node_by_contiguous_path(*prefix_parts) or tree.root
-            
-            for name, annotation in fields.items():
-                prefix_parent.child(name)
-                self.collect_nested_defs(tree, annotation, f"{prefix}.{name}" if prefix else name)
-        
-        elif self.is_enum(model):
-            self.create_node(tree, model, prefix or "")
-
-        return tree.root
+        elif mode == "primitive":
+            node.data.update(asdict(NodeData(name=name, type=annotation)))
 
     def build_tree(
         self,
-        _type: type,
+        annotation: type,
         node: Node | None = None,
-        name: str | None = None,
     ) -> Node:
-    
-        if self.is_union(type(_type)) or self.is_union(_type):
-            tree = Node(name or _type.__name__) if not node else node
-            self.collect_nested_defs(tree, _type, name or _type.__name__)
-            return tree.root
+                
+        if node is None:
+            node = Node(self.get_type_name(annotation))
+            self.create_data(annotation, node)
+                
+        args = get_args(annotation)
         
-        return self.model_to_proto(_type, node)
+        if self.is_optional(annotation):
+            inner = next(arg for arg in args if arg is not NONE_TYPE)
+            self.create_data(annotation, node, "primitive")      
+            field_name = self.to_snake_case(self.get_type_name(inner))
+            if not (self.is_custom(inner) or self.is_enum(inner)):
+                field_name += "_var"
+            child = node.child(field_name)
+            self.build_tree(inner, child)
+                
+        elif self.is_union(annotation):
+            self.create_data(annotation, node, "union")
+            for arg in args:
+                
+                if arg is NONE_TYPE:
+                    continue
+                
+                field_name = node.name + "_" + self.get_type_name(arg)
+                
+                # field_name = self.to_snake_case(self.get_type_name(arg))
+                # if not (self.is_custom(arg) or self.is_enum(arg)):
+                #     field_name += "_var"
+                child = node.child(field_name)
+                self.build_tree(arg, child)
+            
+        elif self.is_collection(annotation):
+            self.create_data(annotation, node, "primitive")
+            for arg in args:
+                field_name = self.to_snake_case(self.get_type_name(arg))
+                if not (self.is_custom(arg) or self.is_enum(arg)):
+                    field_name += "_var"
+                child = node.child(field_name)
+                self.build_tree(arg, child)
+                    
+        elif self.is_enum(annotation):
+            self.create_data(annotation, node, "enum")
 
+        elif self.is_custom(annotation):
+            self.create_data(annotation, node, "custom")
+            fields = self.get_class_fields(annotation)
+            for name, f in fields.items():
+                child = node.child(name)
+                self.build_tree(f, child)
+            
+        else:
+            self.create_data(annotation, node, "primitive")
+            
+        return node.root
+       
+    def build_oneof(
+        self,
+        node: Node,
+        message: Message,
+    ):
+        fields = []
+        for child in node.children.values():
+            proto = self.proto_type(child)
+            if proto:
+                fields.append(MessageField(label=proto.label, type=proto.type, name=child.name))
+                message.modules.append(proto.type)
+                        
+        message.fields.append(
+            OneOf(
+                name=node.name,
+                fields=fields,
+            )
+        )  
+        
     def node_to_message(
         self,
         node: Node,
-        visited: set[str] | None = None,
     ) -> list[Message]:
         
-        visited = set() if visited is None else visited
+        label = node.data.get("label")
+        name = node.data.get("name")
         
-        node_name = node.data.get("message_name")
-        node_type = node.data.get("message_type")
-        if self.is_removed(node) or node_name is None or node_name in visited:
-            return []
+        message = Message(label=label, name=name)
+        messages: list[Message] = []
 
-        visited.add(node_name)
-        messages_list: list[Message] = []
-        message: Message = Message()
-        lines = [f"{node_type} {node_name} {{"]
-        
-        start_index = 1 if node_type == "message" else 0
-        for idx, child in enumerate(node.children.values(), start_index):
-            
-            if self.is_removed(child):
-                continue
-
-            proto = self.proto_type(child)
-            proto.name = child.name
-            if node_type != "message":
-                proto.p_type = None
-
-            if proto.contains_custom and not child.data.get("message_name") and child.children:
+        for child in node.children.values():
+                        
+            if child.data.get("label") == "oneof":
+                if self.resolve_is_removed(child):
+                    continue
+                self.build_oneof(child, message)
                 for grandchild in child.children.values():
-                    messages_list.extend(self.node_to_message(grandchild, visited))
+                    messages.extend(self.node_to_message(grandchild))
+                continue
+            
+            proto = self.proto_type(child)
+            if proto:
+                message.modules.append(proto.type)
+                message.fields.append(MessageField(label=proto.label, type=proto.type, name=child.name))
+                if proto.process_type:
+                    messages.extend(self.node_to_message(child))
+            
+        if message.label and message.name:
+            if not message.is_empty():
+                messages.append(message)
 
-            if child.children:
-                messages_list.extend(self.node_to_message(child, visited))
-
-            lines.append(self.format_proto_field(proto, idx))
-            message.modules.append(proto.p_type)
-
-        lines.append("}")
-        if len(lines) > 2:
-            message.text = "\n".join(lines)
-            messages_list.append(message)
-        
-        return messages_list
+        return messages
         
     def build(
         self,
@@ -316,5 +259,5 @@ class SessionBuilder(BaseBuilder):
     ) -> str:
     
         tree = self.build_tree(model)
-        messages = self.node_to_message(tree, tree.root)
+        messages = self.node_to_message(tree)
         return "\n\n".join([msg.text for msg in messages])

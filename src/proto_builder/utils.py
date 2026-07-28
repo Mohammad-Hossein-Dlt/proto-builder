@@ -43,6 +43,7 @@ MODULES = {
 }
 
 COLLECTIONS = (list, tuple, set, dict)
+VALUES = [int, float, str, bool, list, tuple, set, dict]
 BUILTIN_MODULES = {"builtins", "typing", "types", "collections", "collections.abc", "inspect"}
 NONE_TYPE = type(None)
 
@@ -62,54 +63,58 @@ class ProtoConfig:
         self.optional = optional
         self.optional_all = optional_all
         
+    def build_tree(
+        self,
+        path: str,
+    ) -> Node:
+        root, *body = path.split(".")
+        return Node(root).add(*body)
+        
     def get_override(
         self,
-        condition: Literal["exact", "scope"] = "exact",
-        mode: Literal["include", "exclude"] | None = None,
-    ) -> dict[str, "OverrideConfig"]:
+    ) -> list[Node]:
         
-        if mode == "include":
-            return {i.name: i for i in self.override if i.condition == condition and i.include_self}
+        result = []
         
-        elif mode == "exclude":
-            return {i.name: i for i in self.override if i.condition == condition and not i.include_self}
-        
-        return {i.name: i for i in self.override if i.condition == condition}
+        for i in self.override:
+            tree = self.build_tree(i.name)
+            tree.data.update({"type": i.type})
+            result.append(tree)
+                
+        return result
         
     def get_remove(
         self,
         condition: Literal["exact", "scope"] = "exact",
         mode: Literal["include", "exclude"] | None = None,
-    ) -> set[str]:
+    ) -> list[Node]:
         
         if mode == "include":
-            return [i.name for i in self.remove if i.condition == condition and i.include_self]
+            return [self.build_tree(i.name) for i in self.remove if i.condition == condition and i.include_self]
         
         elif mode == "exclude":
-            return [i.name for i in self.remove if i.condition == condition and not i.include_self]
+            return [self.build_tree(i.name) for i in self.remove if i.condition == condition and not i.include_self]
         
-        return [i.name for i in self.remove if i.condition == condition]
+        return [self.build_tree(i.name) for i in self.remove if i.condition == condition]
     
     def get_optional(
         self,
         condition: Literal["exact", "scope"] = "exact",
         mode: Literal["include", "exclude"] | None = None,
-    ) -> set[str]:
+    ) -> list[Node]:
                 
         if mode == "include":
-            return [i.name for i in self.optional if i.condition == condition and i.include_self]
+            return [self.build_tree(i.name) for i in self.optional if i.condition == condition and i.include_self]
         
         elif mode == "exclude":
-            return [i.name for i in self.optional if i.condition == condition and not i.include_self]
+            return [self.build_tree(i.name) for i in self.optional if i.condition == condition and not i.include_self]
         
-        return [i.name for i in self.optional if i.condition == condition]
+        return [self.build_tree(i.name) for i in self.optional if i.condition == condition]
     
 @dataclass
 class OverrideConfig:
     name: str = field(default_factory=str)
     type: type = field(default_factory=type)
-    condition: Literal["exact", "scope"] = field(default="exact")
-    include_self: bool = False
 
 @dataclass
 class FieldConfig:
@@ -119,29 +124,87 @@ class FieldConfig:
 
 @dataclass(slots=True)
 class ProtoType:
-    optional: bool = False
-    repeated: bool = False
-    p_type: str = ""
-    name: str | None = None
-    contains_custom: bool = False
-
-
+    label: Literal["repeated", "optional"] | None = None
+    type: str = ""
+    process_type: bool = True
+    
 @dataclass(slots=True)
 class Session:
-    fn_name: str = ""
-    request_name: str = ""
-    response_name: str = ""
-    input_params: dict[str, Node] = field(default_factory=dict)
-    output_params: dict[str, Node] = field(default_factory=dict)
+    name: str = ""
+    input_node: Node = field(default_factory=Node)
+    output_node: Node = field(default=Node)
 
 @dataclass(slots=True)
 class NodeData:
-    message_type: str | None = None
-    message_name: str | None = None
-    field_type: type | None = None
-    is_custom: bool = False
-
+    label: str | None = None
+    name: str | None = None
+    type: type | None = None
+    
 @dataclass(slots=True)
 class Message:
-    text: str = field(default_factory=str)
+    label: str = field(default_factory=str)
+    name: str = field(default_factory=str)
+    fields: list[MessageField | OneOf] = field(default_factory=list)
     modules: list[str] = field(default_factory=list)
+    
+    @property
+    def text(self) -> str:
+        content = [f"{self.label} {self.name} {{"]
+        
+        start_index = 1 if self.label == "message" else 0
+        idx = start_index
+        for f in self.fields:
+
+            if isinstance(f, MessageField):
+                if self.label == "enum":
+                    content.append(f"    {f.name} = {idx};")  
+                elif f.label:
+                    content.append(f"    {f.label} {f.type} {f.name} = {idx};")
+                else:
+                    content.append(f"    {f.type} {f.name} = {idx};")
+                
+                idx += 1
+            
+            elif isinstance(f, OneOf):
+                content.append(f"    oneof {f.name} {{")
+                for oneof_field in f.fields:
+                    if oneof_field.label:
+                        content.append(f"        {oneof_field.label} {oneof_field.type} {oneof_field.name} = {idx};")
+                    else:
+                        content.append(f"        {oneof_field.type} {oneof_field.name} = {idx};")
+                    
+                    idx += 1
+                    
+                content.append("    }")
+                
+        
+        content.append("}")
+        
+        return "\n".join(content)
+    
+    
+    def is_empty(self):
+        
+        if not self.fields:
+            return True
+        
+        for message_field in self.fields:
+            if isinstance(message_field, OneOf):
+                if message_field.fields:
+                    return False
+                
+            elif isinstance(message_field, MessageField):
+                return False
+                
+        return True
+    
+@dataclass(slots=True)
+class MessageField:
+    label: str | None = field(default_factory=str)
+    type: str = field(default_factory=str)
+    name: str = field(default_factory=str)
+    
+@dataclass
+class OneOf:
+    name: str
+    fields: list[MessageField]

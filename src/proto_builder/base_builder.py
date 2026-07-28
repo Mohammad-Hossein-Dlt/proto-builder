@@ -1,15 +1,16 @@
-from .utils import BUILTIN_MODULES, COLLECTIONS, NONE_TYPE, PROTO, ProtoConfig, ProtoType
-from .tree_structure import Node, VariantMode
+from .utils import BUILTIN_MODULES, COLLECTIONS, NONE_TYPE, PROTO, ProtoConfig
+from .tree_structure import Node
 from enum import Enum
 import inspect
 import types
+import re
 from typing import (
     get_args,
     get_origin,
     get_type_hints,
     Union,
+    Literal,
 )
-
 
 class BaseBuilder:
     
@@ -20,81 +21,71 @@ class BaseBuilder:
     
         self.config = config or ProtoConfig()
 
-    def format_proto_field(
+    def to_snake_case(
         self,
-        proto: ProtoType,
-        index: int,
+        name: str,
     ) -> str:
-    
-        if proto.optional:
-            type_decl = f"optional {proto.p_type}"
-        elif proto.repeated:
-            type_decl = f"repeated {proto.p_type}"
-        elif proto.p_type:
-            type_decl = proto.p_type
-        else:
-            type_decl = None
-
-        if type_decl:
-            return f"    {type_decl} {proto.name} = {index};"
-        return f"    {proto.name} = {index};"
-
-    def is_enum(
+        name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', name)
+        name = re.sub(r'([a-z\d])([A-Z])', r'\1_\2', name)
+        return name.lower()
+        
+    def get_type_name(
         self,
-        f_type: type,
-    ) -> bool:
-    
-        return inspect.isclass(f_type) and issubclass(f_type, Enum)
+        _type: type,
+    ) -> str:
+        return getattr(_type, "__name__", str(_type))
 
     def is_union(
         self,
-        f_type: type,
+        annotation: type,
     ) -> bool:
+        
+        origin = get_origin(annotation)
+        return origin in (types.UnionType, Union) or annotation in (types.UnionType, Union)
     
-        return f_type in (types.UnionType, Union)
+    def is_optional(
+        self,
+        annotation: type,
+    ) -> bool:
+        
+        args = get_args(annotation)        
+        return self.is_union(annotation) and len(args) == 2 and NONE_TYPE in args
 
     def is_custom(
         self,
-        f_type: type,
+        annotation: type,
     ) -> bool:
     
         return (
-            inspect.isclass(f_type)
-            and f_type not in PROTO
-            and not self.is_enum(f_type)
-            and f_type.__module__ not in BUILTIN_MODULES
+            inspect.isclass(annotation)
+            and annotation not in PROTO
+            and not self.is_enum(annotation)
+            and annotation.__module__ not in BUILTIN_MODULES
         )
-
-    def get_class_fields(
+        
+    def is_enum(
         self,
-        cls: type,
-    ) -> dict:
+        annotation: type,
+    ) -> bool:
     
-        return get_type_hints(cls, include_extras=True)
-
-    def enum_params(
-        self,
-        enum_class: type[Enum],
-    ) -> list[str]:
-    
-        return [item.name for item in enum_class]
+        return inspect.isclass(annotation) and issubclass(annotation, Enum)
 
     def is_collection(
         self,
-        f_type: type,
+        annotation: type,
     ) -> bool:
     
-        return f_type in COLLECTIONS or get_origin(f_type) in COLLECTIONS
+        return annotation in COLLECTIONS or get_origin(annotation) in COLLECTIONS
 
     def is_nested_collection(
         self,
-        f_type: type,
+        annotation: type,
     ) -> bool:
     
-        origin = get_origin(f_type)
-        args = get_args(f_type)
+        origin = get_origin(annotation)
+        args = get_args(annotation)
 
-        if f_type in COLLECTIONS:
+        if annotation in COLLECTIONS:
             return False
 
         if origin in (list, tuple, set):
@@ -107,62 +98,20 @@ class BaseBuilder:
             return self.is_collection(key_type) or self.is_collection(value_type)
 
         return False
-
-    # def collect_custom_types(
-    #     self,
-    #     f_type: type,
-    # ):
-    #     result = []
-    #     stack = [f_type]
-
-    #     while stack:
-    #         current = stack.pop()
-    #         origin = get_origin(current)
-    #         args = get_args(current)
-
-    #         if self.is_union(origin):
-    #             stack.extend(arg for arg in args if arg is not NONE_TYPE)
-    #             continue
-
-    #         if self.is_collection(origin):
-    #             stack.extend(arg for arg in args if arg is not NONE_TYPE)
-    #             continue
-
-    #         if self.is_custom(origin) or self.is_enum(origin):
-    #             result.append(origin)
-    #             continue
-
-    #         if self.is_custom(current) or self.is_enum(current):
-    #             result.append(current)
-
-    #     return result
-
-    def collect_custom_types(
+    
+    def get_class_fields(
         self,
-        f_type: type,
-    ):
-        result = []
-        stack = [f_type]
+        cls: type,
+    ) -> dict:
+    
+        return get_type_hints(cls, include_extras=True)
 
-        while stack:
-            current = stack.pop()
-            origin = get_origin(current)
-            args = get_args(current)
-            
-            if self.is_union(origin):
-                stack.extend(arg for arg in reversed(args) if arg is not NONE_TYPE)
-                continue
-
-            if self.is_collection(origin):
-                stack.extend(arg for arg in reversed(args) if arg is not NONE_TYPE)
-                if origin not in result:
-                    result.append(origin)
-                continue
-            
-            if current not in result:
-                result.append(current)
-
-        return result
+    def get_enum_params(
+        self,
+        enum_class: type[Enum],
+    ) -> list[str]:
+    
+        return [item.name for item in enum_class]
 
     def create_path_str(
         self,
@@ -175,33 +124,12 @@ class BaseBuilder:
             if isinstance(n, (Node, str))
         )
 
-    def _variant_paths(
-        self,
-        node: Node,
-        *,
-        exact: bool,
-        mode: VariantMode = "include-self",
-    ) -> list[str]:
-    
-        return [
-            self.create_path_str(*variant)
-            for variant in node.path_variants_to_root(mode=mode)
-        ]
-
-    def _arg_names(
-        self,
-        node: Node,
-    ) -> tuple[str]:
-    
-        custom_args = self.collect_custom_types(node.data.get("field_type"))
-        return tuple(f_type.__name__ for f_type in custom_args if f_type is not None)
-
-    def is_removed(
+    def resolve_is_removed(
         self,
         node: Node,
     ) -> bool:
         
-        arg_names = self._arg_names(node)
+        data_type = self.get_type_name(node.data.get("type"))
         
         # Exact
         remove_exact_include_self = self.config.get_remove("exact", "include")
@@ -210,47 +138,39 @@ class BaseBuilder:
         # Scope
         remove_scope_include_self = self.config.get_remove("scope", "include")
         remove_scope_exclude_self = self.config.get_remove("scope", "exclude")
+                
+        path = self.path_variant(node)
         
-        # For absolute path like `Class1` | contains self
-        if any(arg in remove_exact_include_self or arg in remove_scope_include_self for arg in arg_names):
-            return True
+        for i in remove_exact_include_self:
+            if self.is_subpath(path, i.path) and (i.name == node.name or i.name == data_type):
+                return True
+            
+        for i in remove_scope_include_self:
+            if self.is_subpath(path, i.path):
+                return True
+                        
+        path = self.path_variant(node, "exclude-self")
         
-        for variant in node.path_variants_to_root(mode="all"):
-            
-            # For relative path like Class1.Classs2, contains self
-            if self.create_path_str(*variant) in remove_exact_include_self:
-                return True
-
-            if self.create_path_str(*variant) in remove_scope_include_self:
+        for i in remove_exact_exclude_self:
+            if self.is_subpath(path, i.path):
                 return True
             
-            
-            # For relative path like Class1.var, contains self
-            if any(self.create_path_str(*variant, arg) in remove_exact_include_self for arg in arg_names):
+        for i in remove_scope_exclude_self:
+            if self.is_subpath(path, i.path):
                 return True
-                    
-            if any(self.create_path_str(*variant, arg) in remove_scope_include_self for arg in arg_names):
-                return True
-                      
-        # For relative path like Class1.Classs2, exclude self
-        for variant in node.path_variants_to_root(mode="exclude-self"):
-            if self.create_path_str(*variant) in remove_exact_exclude_self:
-                return True
-            
-            if self.create_path_str(*variant) in remove_scope_exclude_self:
-                return True
-
+                
         return False
 
-    def is_optional(
+    def resolve_is_optional(
         self,
         node: Node,
     ) -> bool:
         
+        
         if self.config.optional_all:
             return True
-
-        arg_names = self._arg_names(node)
+        
+        data_type = self.get_type_name(node.data.get("type"))
         
         # Exact
         optional_exact_include_self = self.config.get_optional("exact", "include")
@@ -259,100 +179,81 @@ class BaseBuilder:
         optional_scope_include_self = self.config.get_optional("scope", "include")
         optional_scope_exclude_self = self.config.get_optional("scope", "exclude")
         
-        # For absolute path like `Class1` | contains self
-        if any(arg in optional_exact_include_self or arg in optional_scope_include_self for arg in arg_names):
-            return True
+        path = self.path_variant(node)
         
-        # Scope
-        for variant in node.path_variants_to_root(mode="all"):
-            
-            # For relative path like Class1.Classs2, contains self
-            if self.create_path_str(*variant) in optional_scope_include_self:
+        for i in optional_exact_include_self:
+            if self.is_subpath(path, i.path) and (i.name == node.name or i.name == data_type):
                 return True
             
-            # For relative path like Class1.var, contains self
-            if any(self.create_path_str(*variant, arg) in optional_scope_include_self or arg in optional_scope_include_self for arg in arg_names):
-                return True            
-        
-        for variant in node.path_variants_to_root(mode="exclude-self"):
-            
-            # Exact
-            # For relative path like Class1.var, contains self
-            if any(self.create_path_str(*variant, arg) in optional_exact_include_self for arg in arg_names):
+        for i in optional_scope_include_self:
+            if self.is_subpath(path, i.path):
+                return True
+                        
+        path = self.path_variant(node, "exclude-self")
+        for i in optional_scope_exclude_self:
+            if self.is_subpath(path, i.path):
                 return True
             
-            # Scope
-            # For relative path like Class1.Classs2, exclude self
-            if self.create_path_str(*variant) in optional_scope_exclude_self:
-                return True
-            
-        # Exact
-        for variant in node.path_variants_to_root(tags={"class"}, tag_mode="include", mode="include-self"):
-            
-            # For relative path like Class1.Classs2, contains self
-            if self.create_path_str(*variant) in optional_exact_include_self:
-                return True
-                    
         return False
 
     def resolve_type(
         self,
         node: Node,
-        f_type: type,
+        annotation: type,
     ) -> type:
-
-        arg_names = self._arg_names(node)
         
-        # Exact
-        override_exact_include_self = self.config.get_override("exact", "include")
-        
-        # Scope
-        override_scope_include_self = self.config.get_override("scope", "include")
-        override_scope_exclude_self = self.config.get_override("scope", "exclude")
-        
-        # For absolute path like `Class1`, contains self
-        for arg in arg_names:
-            
-            if arg in override_exact_include_self:
-                return override_exact_include_self.get(arg).type
+        override_fields = self.config.get_override()
                 
-            if arg in override_scope_include_self:
-                return override_scope_include_self.get(arg).type
+        path = self.path_variant(node)
+        for i in override_fields:
+            if self.is_subpath(path, i.path) and i.name == node.name:
+                return i.data.get("type", annotation)
+                
+        return annotation
+    
+    def is_subpath(
+        self,
+        path1: str,
+        path2: str,
+        must_end: bool = False,
+    ) -> bool:
+        parts1 = path1.split(".")
+        parts2 = path2.split(".")
+
+        indices = []
+        j = 0
+
+        for i, part in enumerate(parts1):
+            if j < len(parts2) and part == parts2[j]:
+                indices.append(i)
+                j += 1
+
+        if j != len(parts2):
+            return False
+
+        if must_end:
+            return indices[-1] == len(parts1) - 1
+
+        return True
+    
+    def path_variant(
+        self,
+        node: Node,
+        mode: Literal["include-self", "exclude-self"] = "include-self",
+    ) -> str:
         
-        # Scope
-        for variant in node.path_variants_to_root(mode="all"):
-            
-            # For relative path like Class1.Classs2, contains self
-            path = self.create_path_str(*variant)
-            if path in override_scope_include_self:
-                return override_scope_include_self.get(path).type
+        if mode == "include-self":
+            nodes = node.path_to_root()
+        elif mode == "exclude-self":
+            nodes = node.path_to_root()[:-1]
 
-            for arg in arg_names:
-                path = self.create_path_str(*variant, arg)
-                if path in override_scope_include_self:
-                    return override_scope_include_self.get(path).type          
-
-        for variant in node.path_variants_to_root(mode="exclude-self"):
-
-            # Exact
-            # For relative path like Class1.var, contains self
-            for arg in arg_names:
-                path = self.create_path_str(*variant, arg)
-                if path in override_exact_include_self:
-                    return override_exact_include_self.get(path).type
-            
-            # Scope
-            # For relative path like Class1.Classs2, exclude self
-            path = self.create_path_str(*variant)
-            if path in override_scope_exclude_self:
-                return override_scope_exclude_self.get(path).type
-            
-        # Exact
-        for variant in node.path_variants_to_root(tags={"class"}, tag_mode="include", mode="include-self"):
-            
-            # For relative path like Class1.Classs2, contains self
-            path = self.create_path_str(*variant)
-            if path in override_exact_include_self:
-                return override_exact_include_self.get(path).type        
+        chains: list[str] = []
         
-        return f_type
+        for n in nodes:
+            chains.append(n.name)
+            data_type = n.data.get("type")
+            if data_type:
+                name = self.get_type_name(data_type)
+                chains.append(name)
+        
+        return self.create_path_str(*chains)

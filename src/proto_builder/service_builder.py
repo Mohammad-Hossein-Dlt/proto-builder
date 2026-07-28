@@ -9,7 +9,6 @@ from typing import (
     get_args,
     get_type_hints,
     Callable,
-    Literal,
 )    
 
 class ServiceBuilder(BaseBuilder):
@@ -21,84 +20,6 @@ class ServiceBuilder(BaseBuilder):
     
         super().__init__(config)
         self.session_builder = SessionBuilder(config)
-        self.trees: list[Node] = []
-
-    def should_generate_message(
-        self,
-        params: dict[str, Node],
-    ) -> bool:
-        
-        if not params:
-            return False
-        
-        if len(params) > 1:
-            return True
-
-        tree = next(iter(params.values()))
-        if tree.root.data.get("is_custom"):
-            
-            if tree.root.data.get("message_type") == "enum":
-                return True
-            
-            for t in self.trees:
-                
-                if t.root.same_as(tree.root):
-                    return False
-                
-                if t.root.contains_subtree(tree.root):
-                    return False
-        
-        return True
-
-    def merge_model(
-        self,
-        tree: Node,
-    ) -> None:
-    
-        if not any(
-            t.root.contains_subtree(tree.root)
-            for t in self.trees
-        ):
-            self.trees.append(tree)
-
-    def method_models(
-        self,
-        fn: Callable,
-        cls_name: str,
-    ):
-    
-        sig = inspect.signature(fn)
-        hints = get_type_hints(fn)
-        method_node = Node(cls_name).root.child(fn.__name__)
-
-        def add_model(cls: type):
-            if cls and (self.is_custom(cls) or self.is_enum(cls)):
-                tree = self.session_builder.build_tree(cls)
-                
-                if self.is_removed(tree.root):
-                    return
-                
-                self.merge_model(tree)
-
-        def add_type(
-            tp,
-            name: str | None = None,
-        ):
-        
-            node = method_node.child(name or "")
-            resolved = self.resolve_type(node, tp)
-            origin = get_origin(resolved)
-            if self.is_union(origin):
-                for arg in get_args(resolved):
-                    if arg is not NONE_TYPE:
-                        add_model(arg)
-            else:
-                add_model(resolved)
-
-        for param in sig.parameters.values():
-            add_type(hints.get(param.name, param.annotation), param.name)
-
-        add_type(hints.get("return"))
 
     def build_session(
         self,
@@ -106,7 +27,9 @@ class ServiceBuilder(BaseBuilder):
         fn: Callable,
         cls_name: str,
     ) -> Session:
-    
+        
+        fn_name = self.get_type_name(fn)
+        
         sig = inspect.signature(fn)
         hints = get_type_hints(fn)
 
@@ -119,90 +42,92 @@ class ServiceBuilder(BaseBuilder):
         base_name = name.title().replace("_", "")
         request_name = f"{base_name}Request"
         response_name = f"{base_name}Response"
-        input_params: dict[str, Node] = {}
-        output_params: dict[str, Node] = {}
-
-        for param_name, param_type in params.items():
-            node = Node(cls_name).child(fn.__name__).child("arg").child(param_name)
-            node.data.update(asdict(NodeData(message_name=param_type.__name__, field_type=param_type)))
-            
-            if self.is_removed(node):
-                continue
-            
-            resolved_type = self.resolve_type(node, param_type)
-            input_params[param_name] = self.session_builder.build_tree(resolved_type, node)
-            
-        if not input_params:
-            request_name = OTHER["empty"]
         
-        elif len(input_params) == 1:
-            name, tree = next(iter(input_params.items()))
-            f_type = tree.last_node().data.get("field_type")
-            if self.is_custom(f_type) and any(t.root.contains_subtree(tree.root) for t in self.trees):
-                request_name = resolved_type.__name__
+        input_node: Node = Node(cls_name).child(fn_name).child("arg")
+        input_node.data.update(asdict(NodeData(label="message", name=request_name)))
+        
+        output_node: Node = Node(cls_name).child(fn_name).child("return")
+        output_node.data.update(asdict(NodeData(label="message", name=response_name)))
+        
+        for param_name, param_type in params.items():
+            node = input_node.child(param_name)
+            self.session_builder.build_tree(param_type, node)
         
         if ret:
-            
+
             ret_origin = get_origin(ret)
             ret_args = get_args(ret)
+            
             if ret_origin is tuple:
                 for arg in ret_args:
-                    node = Node(cls_name).child(fn.__name__).child("return").child(arg.__name__)
-                    node.data.update(asdict(NodeData(field_type=arg)))
                     
-                    if self.is_removed(node):
-                        continue
-                    
-                    resolved_type = self.resolve_type(node, arg)
-                    tree = self.session_builder.build_tree(resolved_type, node)
-                    
-                    if self.is_union(type(arg)):
-                        output_params.update({"value": tree})
+                    if self.is_optional(arg):
+                        inner = next(a for a in get_args(arg) if a is not NONE_TYPE)
+                        name = self.to_snake_case(self.get_type_name(inner))
+                        if not (self.is_custom(inner) or self.is_enum(inner)):
+                            name += "_var"
                     else:
-                        output_params.update({arg.__name__.lower() + "_value": tree})
+                        name = self.to_snake_case(self.get_type_name(arg)) + "_var"
+                    
+                    node = output_node.child(name)
+                    self.session_builder.build_tree(arg, node)
             else:
-                node = Node(cls_name).child(fn.__name__).child("return")
-                resolved_type = self.resolve_type(node, ret)
-                tree = self.session_builder.build_tree(resolved_type, node)
-                output_params = {"value": tree}
-            
-        if not output_params:
-            response_name = OTHER["empty"]
-            
-        elif len(output_params) == 1:
-            name, tree = next(iter(output_params.items()))
-            f_type = tree.last_node().data.get("field_type")
-            if self.is_custom(f_type) and any(t.root.contains_subtree(tree.root) for t in self.trees):
-                response_name = resolved_type.__name__
+                if self.is_optional(ret):
+                    inner = next(a for a in get_args(ret) if a is not NONE_TYPE)
+                    name = self.to_snake_case(self.get_type_name(inner))
+                    if not (self.is_custom(inner) or self.is_enum(inner)):
+                        name += "_var"
+                else:
+                    name = self.to_snake_case(self.get_type_name(ret)) + "_var"
+                node = output_node.child(name)
+                self.session_builder.build_tree(ret, node)
+                
+        return Session(fn_name, input_node.root, output_node.root)
+    
+    def _typed_node(self, node: Node) -> Node | None:
+        
+        if node.data.get("label") == "enum":
+            return node
+        
+        else: 
+            for child in node.children.values():
+                    
+                if child.data.get("type"):
+                    return child
+                else:
+                    return self._typed_node(child)
+                    
+        return None
+    
+    def resolve_service_name(
+        self,
+        node: Node,
+    ):
+                
+        if not node.children:
+            return OTHER["empty"]
 
-        return Session(fn.__name__, request_name, response_name, input_params, output_params)
+        if len(node.children) > 1:
+            return node.data.get("name")
+        
+        child = self._typed_node(node)
+        
+        if child:
+            f_type = child.data.get("type")
+            if self.is_custom(f_type):
+                return self.get_type_name(f_type)
+        
+        return node.data.get("name")
 
     def message_from_fields(
         self,
-        name: str,
-        fields: dict[str, Node],
-    ) -> Message:
+        node: Node,
+    ) -> list[Message]:
         
-        message: Message = Message()
-        lines = [f"message {name} {{"]
-
-        idx = 1
-        for field_name, tree in fields.items():
-            
-            if self.is_removed(tree):
-                continue
-            
-            proto = self.session_builder.proto_type(tree.last_node())
-            proto.name = field_name
-            lines.append(self.format_proto_field(proto, idx))
-            message.modules.append(proto.p_type)
-            idx += 1
-
-        lines.append("}")
-        if len(lines) > 2:
-            message.text = "\n".join(lines)
-        
-        return message
+        messages_list: list[Message] = []            
+        msg = self.session_builder.node_to_message(node)
+        messages_list.extend(msg)
+        return messages_list
 
     def build(
         self,
@@ -210,58 +135,63 @@ class ServiceBuilder(BaseBuilder):
         package_name: str = "generated",
     ) -> str:
         
-        self.trees = []
-    
-        cls_name = service_cls.__name__
+        cls_name = self.get_type_name(service_cls)
         methods = {
             name: fn
             for name, fn in service_cls.__dict__.items()
             if inspect.isfunction(fn) and getattr(fn, "__isabstractmethod__", False)
         }
 
-        for fn in methods.values():
-            self.method_models(fn, cls_name)
-
-        sessions = {
-            name: self.build_session(name, fn, cls_name)
-            for name, fn in methods.items()
-        }
+        sessions = [self.build_session(name, fn, cls_name) for name, fn in methods.items()]
 
         header = [
             'syntax = "proto3";',
             f"package {package_name};",
         ]
 
-        service = [f"service {cls_name} {{"]
-        for name, session in sessions.items():
-            service.append(f"    rpc {name} ({session.request_name}) returns ({session.response_name});")
-        service.append("}")
-
-        messages: list[str] = []
         modules: list[str] = []
-        for tree in self.trees:
-            msg_list: list[Message] = self.session_builder.node_to_message(tree.root)
-            for msg in msg_list:
-                messages.append(msg.text)
-                modules.extend(msg.modules)
+        service: list[str] = []
+        messages: list[str] = []
         
-        for session in sessions.values():
+        for session in sessions:
             
-            if self.should_generate_message(session.input_params):
-                msg = self.message_from_fields(session.request_name, session.input_params)
-                if msg.text:
-                    messages.append(msg.text)
-                modules.extend(msg.modules)
+            input_node = session.input_node.find_node("arg", "first")
+            output_node = session.output_node.find_node("return", "first")
             
-            if self.should_generate_message(session.output_params):
-                msg = self.message_from_fields(session.response_name, session.output_params)
-                if msg.text:
+            request_name = self.resolve_service_name(input_node)
+            response_name = self.resolve_service_name(output_node)
+            
+            if request_name == OTHER["empty"] or response_name == OTHER["empty"]:
+                modules.append(OTHER["empty"])
+            
+            msgs = self.message_from_fields(input_node)            
+            for msg in msgs:
+         
+                if input_node.data.get("name") != request_name and msg.name == input_node.data.get("name"):
+                    continue
+         
+                if msg.text and msg.text not in messages:
                     messages.append(msg.text)
                 modules.extend(msg.modules)
                 
-            if not session.input_params or not session.output_params:
-                modules.append(OTHER["empty"])
-            
+            if not any(msg.name == input_node.data.get("name") or msg.name == request_name for msg in msgs):
+                request_name = OTHER["empty"]
+                
+            msgs = self.message_from_fields(output_node)
+            for msg in msgs:
+
+                if output_node.data.get("name") != response_name and msg.name == output_node.data.get("name"):
+                    continue
+
+                if msg.text and msg.text not in messages:
+                    messages.append(msg.text)
+                modules.extend(msg.modules)
+                
+            if not any(msg.name == output_node.data.get("name") or msg.name == response_name for msg in msgs):
+                response_name = OTHER["empty"]
+                                 
+            service.append(f"    rpc {session.name} ({request_name}) returns ({response_name});")
+        
         imports: list[str] = []
         for mdl in modules:
             if mdl in MODULES:
@@ -277,7 +207,7 @@ class ServiceBuilder(BaseBuilder):
             content.append("\n".join(imports))
         if service:
             content.append("\n\n")
-            content.append("\n".join(service))
+            content.append("\n".join([f"service {cls_name} {{"] + service + ["}"]))
         if messages:
             content.append("\n\n")
             content.append("\n\n".join(messages))
