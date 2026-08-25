@@ -1,5 +1,13 @@
 # Proto Builder
 
+## 📦 Installation
+
+Install the package with:
+
+```bash
+pip install proto-builder
+```
+
 A simple compiler that converts an abstract class to Protocol Buffers (`.proto`), built with Python.
 
 It can also convert Python `dataclass` or Pydantic models to protobuf messages using a tree-based structure.
