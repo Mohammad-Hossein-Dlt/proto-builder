@@ -100,8 +100,6 @@ class MessageBuilder(BaseBuilder):
                     else:
                         n = self.build_tree(resolve_type)
                     
-                    # print(n.last_node().path)
-            
             obj = n.data.get("type")
             if obj:
                 
