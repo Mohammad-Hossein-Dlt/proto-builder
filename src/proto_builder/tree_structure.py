@@ -8,7 +8,7 @@ class Node:
     name: str
     parent: "Node | None" = None
     data: dict = field(default_factory=dict)
-    children: dict[str, "Node"] = field(default_factory=dict)
+    children: list["Node"] = field(default_factory=list)
     tags: set[str] = field(default_factory=set)
 
     @property
@@ -22,28 +22,60 @@ class Node:
         if self.parent is None:
             return self
         return self.parent.root
+    
+    def get_child(
+        self,
+        name: str,
+    ) -> Node:
+        return next((i for i in self.children if i.name == name))
+    
+    def drop_child(
+        self,
+        name: str,
+    ):
+        index = next((i for i, child in enumerate(self.children) if child.name == name))
+        del self.children[index]    
+
+    def replace_child(
+        self,
+        old: str | "Node",
+        new: str | "Node",
+    ):
+        name = old if isinstance(old, str) else old.name
+        index = next((i for i, child in enumerate(self.children) if child.name == name))
+        if isinstance(new, str):
+            new = Node(name=new)        
+        new.parent = self
             
+        del self.children[index]
+        self.children.insert(index, new)
+        
+        return new
+        
     def child(
         self,
         name: str,
         tags: set[str] = set(),
     ) -> "Node":
         
-        key = name.lower()
-        if key not in self.children:
-            self.children[key] = Node(name=name, parent=self, tags=tags)
-        return self.children[key]
+        if all(i.name != name for i in self.children):
+            self.children.append(
+                Node(name=name, parent=self, tags=tags),
+            )
+            
+                
+        return self.get_child(name)
     
     def node(
         self,
-        _node: "Node",
+        n: "Node",
     ) -> "Node":
         
-        key = _node.name.lower()
-        if key not in self.children:
-            _node.parent = self
-            self.children[key] = _node
-        return self.children[key]
+        if all(i.name != n.name for i in self.children):
+            n.parent = self
+            self.children.append(n)
+            
+        return self.get_child(n.name)
     
     def bulk(
         self,
@@ -53,6 +85,35 @@ class Node:
         
         for i in parts:
             self.child(i, tags=tags)
+        return self
+    
+    def set_parent(self, parent: "Node") -> "Node":
+
+        if parent.same_as(self):
+            raise ValueError("Cannot set a node as parent of itself or its descendant.")
+
+        if self.parent is not None:
+            self.parent.children.pop(self.name.lower(), None)
+
+        self.parent = parent
+        parent.children[self.name.lower()] = self
+
+        return self
+    
+    def insert_parent(
+        self,
+        name: str,
+    ) -> "Node":
+
+        old_parent = self.parent
+
+        new_parent = Node(name=name, parent=old_parent)
+        new_parent.children.append(self)
+        self.parent = new_parent
+        
+        if old_parent:
+            old_parent.replace_child(self, new_parent)
+
         return self
     
     def add(
@@ -73,7 +134,7 @@ class Node:
     ) -> Iterator[str]:
         
         yield self.path
-        for child in self.children.values():
+        for child in self.children:
             yield from child.iter_paths()
     
     def next(
@@ -81,7 +142,7 @@ class Node:
     ) -> "Node":
         
         if self.children:
-            return next(iter(self.children.values()))
+            return next(iter(self.children))
         
         return self
     
@@ -100,21 +161,21 @@ class Node:
     ) -> Iterator[Node]:
     
         if position == "first":
-            return iter(self.children.values())
+            return iter(self.children)
         elif position == "last":
-            return reversed(self.children.values())
+            return reversed(self.children)
 
     def find_node(
         self,
-        name: str,
+        *name: str,
         position: SearchPosition = "first",
     ) -> "Node | None":
         
-        if self.name == name:
+        if self.name in name:
             return self
         
         for child in self._iter_children(position):
-            found = child.find_node(name, position=position)
+            found = child.find_node(*name, position=position)
             if found:
                 return found
         
@@ -187,9 +248,9 @@ class Node:
                 return found
 
         if position == "first":
-            children = self.children.values()
+            children = self.children
         elif position == "last":
-            children = reversed(self.children.values())
+            children = reversed(self.children)
 
         for child in children:
             found = child.find_node_by_discontiguous_path(*parts)
@@ -204,7 +265,7 @@ class Node:
         
         node = self
         while node.children:
-            node = list(node.children.values())[-1]
+            node = list(node.children)[-1]
         return node
     
     def same_as(self, other: "Node") -> bool:
@@ -214,8 +275,8 @@ class Node:
         if len(self.children) != len(other.children):
             return False
 
-        for key, child in self.children.items():
-            other_child = other.children.get(key)
+        for child in self.children:
+            other_child = other.get_child(child.name)
             if other_child is None:
                 return False
             if not child.same_as(other_child):
@@ -229,7 +290,7 @@ class Node:
             if node.same_as(other):
                 return True
 
-            return any(_walk(child) for child in node.children.values())
+            return any(_walk(child) for child in node.children)
 
         return _walk(self)
     
@@ -243,7 +304,7 @@ class Node:
         if self.name == name:
             result.append(self)
 
-        for child in self.children.values():
+        for child in self.children:
             result.extend(child.find_nodes(name))
 
         return result
@@ -257,7 +318,7 @@ class Node:
         if tags.issubset(self.tags):
             result.append(self)
 
-        for child in self.children.values():
+        for child in self.children:
             result.extend(child.find_nodes_by_tags(tags))
 
         return result
@@ -271,7 +332,24 @@ class Node:
         if not self.children:
             return [self]
         
-        for child in self.children.values():
+        for child in self.children:
             result.extend(child.leaves())
         
         return result
+    
+    def copy(
+        self,
+        parent: "Node | None" = None,
+    ) -> "Node":
+        new_node = Node(
+            name=self.name,
+            parent=parent,
+            data=self.data.copy(),
+            tags=self.tags.copy(),
+        )
+
+        for child in self.children:
+            child_copy = child.copy(parent=new_node)
+            new_node.children.append(child_copy)
+
+        return new_node

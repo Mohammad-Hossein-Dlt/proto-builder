@@ -1,24 +1,22 @@
-from .utils import BUILTIN_MODULES, COLLECTIONS, NONE_TYPE, PROTO, ProtoConfig
+from .utils import PROTO, LIST_TYPES, COLLECTIONS, BUILTIN_MODULES, NONE_TYPE, ProtoConfig
 from .tree_structure import Node
 from enum import Enum
 import inspect
 import types
 import re
 from typing import (
-    get_args,
     get_origin,
     get_type_hints,
     Union,
-    Literal,
 )
 
 class BaseBuilder:
-    
+
     def __init__(
         self,
         config: ProtoConfig | None = None,
     ):
-    
+
         self.config = config or ProtoConfig()
 
     def to_snake_case(
@@ -28,232 +26,203 @@ class BaseBuilder:
         name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', name)
         name = re.sub(r'([a-z\d])([A-Z])', r'\1_\2', name)
         return name.lower()
-        
+
     def get_type_name(
         self,
-        _type: type,
+        _type: object,
     ) -> str:
         return getattr(_type, "__name__", str(_type))
 
+    def get_node_name(
+        self,
+        annotation: object,
+    ) -> str:
+
+        if self.is_union(annotation):
+            return "Union"
+
+        if annotation is NONE_TYPE:
+            return "NoneType"
+
+        origin = get_origin(annotation)
+        if origin in COLLECTIONS:
+            return origin.__name__
+
+        if annotation in COLLECTIONS:
+            return annotation.__name__
+
+        return self.get_type_name(annotation)
+
     def is_union(
         self,
-        annotation: type,
+        annotation: object,
     ) -> bool:
-        
+
         origin = get_origin(annotation)
         return origin in (types.UnionType, Union) or annotation in (types.UnionType, Union)
-    
-    def is_optional(
-        self,
-        annotation: type,
-    ) -> bool:
-        
-        args = get_args(annotation)        
-        return self.is_union(annotation) and len(args) == 2 and NONE_TYPE in args
 
     def is_custom(
         self,
-        annotation: type,
+        annotation: object,
     ) -> bool:
-    
+
         return (
             inspect.isclass(annotation)
             and annotation not in PROTO
             and not self.is_enum(annotation)
             and annotation.__module__ not in BUILTIN_MODULES
+            and self.get_type_name(annotation) not in PROTO
         )
-        
+
     def is_enum(
         self,
-        annotation: type,
+        annotation: object,
     ) -> bool:
-    
+
         return inspect.isclass(annotation) and issubclass(annotation, Enum)
 
     def is_collection(
         self,
-        annotation: type,
+        annotation: object,
     ) -> bool:
-    
+
         return annotation in COLLECTIONS or get_origin(annotation) in COLLECTIONS
 
-    def is_nested_collection(
-        self,
-        annotation: type,
-    ) -> bool:
-    
-        origin = get_origin(annotation)
-        args = get_args(annotation)
-
-        if annotation in COLLECTIONS:
-            return False
-
-        if origin in (list, tuple, set):
-            return bool(args) and self.is_collection(args[0])
-
-        if origin is dict:
-            if len(args) != 2:
-                return True
-            key_type, value_type = args
-            return self.is_collection(key_type) or self.is_collection(value_type)
-
-        return False
-    
     def get_class_fields(
         self,
-        cls: type,
+        cls: object,
     ) -> dict:
-    
+
         return get_type_hints(cls, include_extras=True)
 
     def get_enum_params(
         self,
         enum_class: type[Enum],
     ) -> list[str]:
-    
-        return [item.name for item in enum_class]
 
-    def create_path_str(
+        return [(item.name, item.value) for item in enum_class]
+    
+    def is_nested_collection(
         self,
-        *args: Node | str,
-    ) -> str:
+        path: str,
+    ) -> bool:
         
-        return ".".join(
-            n.name if isinstance(n, Node) else n
-            for n in args
-            if isinstance(n, (Node, str))
-        )
+        items = path.split(".")
+        
+        counter = 0
+        for i in items:
+
+            if i in LIST_TYPES:
+                counter += 1
+            else:
+                if counter:
+                    if counter and i == "dict":
+                        return True
+                    elif counter > 1 and i == "Union":
+                        return True
+                counter = 0
+
+            if counter > 1:
+                return True
+
+        return False
 
     def resolve_is_removed(
         self,
         node: Node,
+        prefix: str = "",
     ) -> bool:
+
+        prefix = prefix + "." if prefix else prefix
+        path = prefix + node.path
         
-        data_type = self.get_type_name(node.data.get("type"))
+        is_field = node.data.get("label") == "field"
+        next_path = prefix + node.next().path
         
-        # Exact
-        remove_exact_include_self = self.config.get_remove("exact", "include")
-        remove_exact_exclude_self = self.config.get_remove("exact", "exclude")
-        
-        # Scope
-        remove_scope_include_self = self.config.get_remove("scope", "include")
-        remove_scope_exclude_self = self.config.get_remove("scope", "exclude")
-                
-        path = self.path_variant(node)
-        
-        for i in remove_exact_include_self:
-            if self.is_subpath(path, i.path) and (i.name == node.name or i.name == data_type):
+        for i in self.config.remove:
+            
+            if self.is_subpath(path, i):
                 return True
             
-        for i in remove_scope_include_self:
-            if self.is_subpath(path, i.path):
-                return True
-                        
-        path = self.path_variant(node, "exclude-self")
-        
-        for i in remove_exact_exclude_self:
-            if self.is_subpath(path, i.path):
+            elif is_field and self.is_subpath(next_path, i):
                 return True
             
-        for i in remove_scope_exclude_self:
-            if self.is_subpath(path, i.path):
-                return True
-                
         return False
 
     def resolve_is_optional(
         self,
         node: Node,
+        prefix: str = "",
     ) -> bool:
-        
-        
-        if self.config.optional_all:
-            return True
-        
-        data_type = self.get_type_name(node.data.get("type"))
-        
-        # Exact
-        optional_exact_include_self = self.config.get_optional("exact", "include")
-        
-        # Scope
-        optional_scope_include_self = self.config.get_optional("scope", "include")
-        optional_scope_exclude_self = self.config.get_optional("scope", "exclude")
-        
-        path = self.path_variant(node)
-        
-        for i in optional_exact_include_self:
-            if self.is_subpath(path, i.path) and (i.name == node.name or i.name == data_type):
+
+        prefix = prefix + "." if prefix else prefix
+        path = prefix + node.path
+
+        for i in self.config.optional:
+            
+            if node.parent and i.split(".")[-1] == node.parent.name:
                 return True
             
-        for i in optional_scope_include_self:
-            if self.is_subpath(path, i.path):
+            elif i.split(".")[-1] == node.name and self.is_subpath(path, i):
                 return True
-                        
-        path = self.path_variant(node, "exclude-self")
-        for i in optional_scope_exclude_self:
-            if self.is_subpath(path, i.path):
-                return True
-            
+
         return False
 
     def resolve_type(
         self,
         node: Node,
-        annotation: type,
+        prefix: str = "",
     ) -> type:
-        
-        override_fields = self.config.get_override()
-                
-        path = self.path_variant(node)
-        for i in override_fields:
-            if self.is_subpath(path, i.path) and i.name == node.name:
-                return i.data.get("type", annotation)
-                
-        return annotation
-    
+
+        prefix = prefix + "." if prefix else prefix
+        path = prefix + node.path
+
+        for i in self.config.override:
+            
+            k, v = list(i.items())[0]
+            
+            if self.get_type_name(v) not in path and self.is_subpath(path, k, must_end=True):
+                return v
+
+    def ordered_combinations(
+        selfm,
+        items: list,
+    ):
+        if len(items) < 2:
+            yield items
+            return
+
+        first = items[0]
+        last = items[-1]
+        middle = items[1:-1]
+
+        def helper(start=0, current=None):
+            if current is None:
+                current = []
+
+            for i in range(start, len(middle)):
+                new_current = current + [middle[i]]
+                yield [first] + new_current + [last]
+                yield from helper(i + 1, new_current)
+
+        yield [first, last]
+        yield from helper()
+
     def is_subpath(
         self,
         path1: str,
         path2: str,
         must_end: bool = False,
     ) -> bool:
+
         parts1 = path1.split(".")
         parts2 = path2.split(".")
 
-        indices = []
-        j = 0
-
-        for i, part in enumerate(parts1):
-            if j < len(parts2) and part == parts2[j]:
-                indices.append(i)
-                j += 1
-
-        if j != len(parts2):
-            return False
-
-        if must_end:
-            return indices[-1] == len(parts1) - 1
-
-        return True
-    
-    def path_variant(
-        self,
-        node: Node,
-        mode: Literal["include-self", "exclude-self"] = "include-self",
-    ) -> str:
-        
-        if mode == "include-self":
-            nodes = node.path_to_root()
-        elif mode == "exclude-self":
-            nodes = node.path_to_root()[:-1]
-
-        chains: list[str] = []
-        
-        for n in nodes:
-            chains.append(n.name)
-            data_type = n.data.get("type")
-            if data_type:
-                name = self.get_type_name(data_type)
-                chains.append(name)
-        
-        return self.create_path_str(*chains)
+        for i in self.ordered_combinations(parts2):
+            check_path = all(p2 in parts1 for p2 in i)
+            if must_end:
+                if check_path and parts1[-1] == i[-1]:
+                    return True
+            else:
+                if check_path:
+                    return True
